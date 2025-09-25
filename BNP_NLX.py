@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
-BNP_NL8_PropB_BP.py
+BNP_NL8_PropB_BP_rcfix_kbest.py
 
-Branch-and-Price for NL8 with:
-  • DW master (tours as columns) + exact pricing (SPPRC) with L..U runs
-  • Proposition B: DP arc screen + exact labeling; symmetry break at the middle
-  • Proposition A: tour elimination via UB − LB threshold on reduced costs (keeps ≥1 per team)
-  • Dynamic NRC separation (no consecutive repeaters), CG-compatible
-  • LP-based branching on match events; HA fallback branching (force home/away at (team, slot))
-  • Feasibility seeding at child nodes (injects columns satisfying branch constraints)
-  • Better initial columns: Berger + small 2-opt pool (away-only swaps within halves)
-  • Root IP try = 180s; other nodes IP = 60s
+Upgrades:
+  • Correct reduced costs: subtract μ_{t,s} and μ_{opp,s} on away arcs (pricing & Prop A)
+  • K-best pricing (default K=3): add up to K negative columns per team per CG iteration
+  • Tight solver tolerances: OptimalityTol=1e-9, FeasibilityTol=1e-9 (LP & IP)
+  • Everything else preserved: Prop B pruning, Prop A, dynamic NRC, strong branching, HA fallback,
+    feasibility seeding, symmetry at middle, Berger+2opt seeds, root IP=180s
 
 Run:
-    python -u BNP_NL8_PropB_BP.py NL8.xml
+    python -u BNP_NL8_PropB_BP_rcfix_kbest.py NL8.xml
 """
 
 import sys
@@ -61,7 +58,6 @@ def parse_instance(xml_path):
 
 
 def tour_travel_cost(team, opponents, HA, D):
-    """Compute full travel cost including return to home."""
     prev = team
     total = 0
     for opp, ha in zip(opponents, HA):
@@ -77,7 +73,6 @@ def tour_travel_cost(team, opponents, HA, D):
 # =========================
 
 def generate_single_rr(team_ids):
-    """Berger (circle method) for an even number of teams (one RR)."""
     teams = list(team_ids)
     n = len(teams)
     assert n % 2 == 0
@@ -193,6 +188,9 @@ class MasterLP:
     def build(self):
         m = gp.Model("TTP_master")
         m.Params.OutputFlag = 1 if self._gurobi_output else 0
+        # Tight tolerances for exactness
+        m.Params.OptimalityTol = 1e-9
+        m.Params.FeasibilityTol = 1e-9
         self.model = m
         self.lam = {}
         # λ variables
@@ -260,7 +258,12 @@ class MasterLP:
         self.model.update()
         self.model.Params.IntegralityFocus = 0
         self.model.Params.Method = 1  # dual simplex
-        if time_limit: self.model.Params.TimeLimit = time_limit
+        self.model.Params.OptimalityTol = 1e-9
+        self.model.Params.FeasibilityTol = 1e-9
+        if time_limit is not None:
+            self.model.Params.TimeLimit = time_limit
+        else:
+            self.model.Params.TimeLimit = 1e100
         self.model.optimize()
         if self.model.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and self.model.SolCount > 0:
             try:
@@ -278,28 +281,17 @@ class MasterLP:
         return self.model.Status, obj_val, dual_team, dual_couple
 
     def solve_ip(self, time_limit=None):
-        """
-        Solve the current Restricted Master Problem as an *integer* program (λ ∈ {0,1}).
-        Returns:
-            (status, obj, sol)
-          - status: Gurobi status code
-          - obj:    objective value if a solution exists, else None
-          - sol:    dict {team: (idx, column_dict)} chosen in the incumbent,
-                    or None if no feasible solution was found.
-        """
-        # Enforce integrality on λ
+        """Solve the RMP as an IP to improve the incumbent (optional)."""
         for v in self.model.getVars():
             v.vtype = GRB.BINARY
         self.model.update()
-
-        # Optional time limit
+        self.model.Params.OptimalityTol = 1e-9
+        self.model.Params.FeasibilityTol = 1e-9
         if time_limit is not None:
             self.model.Params.TimeLimit = time_limit
-
-        # Optimize
+        else:
+            self.model.Params.TimeLimit = 1e100
         self.model.optimize()
-
-        # Extract solution if available
         sol = {}
         if self.model.SolCount > 0 and self.model.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT):
             for (t, idx), var in self.lam.items():
@@ -310,7 +302,6 @@ class MasterLP:
             except gp.GurobiError:
                 obj = None
             return self.model.Status, obj, sol
-
         return self.model.Status, None, None
 
 
@@ -319,13 +310,24 @@ class MasterLP:
 # =========================
 
 def build_rc_edges(inst, team, dual_couple):
-    """rc = D[u][v] - dual_couple(team,s)*[v!=team] for (s,u)->(s+1,v)."""
+    """
+    Reduced-cost arc (s,u)->(s+1,v):
+      If v==team (home): rc = D[u][v]
+      If v!=team (away): rc = D[u][v] - μ_{team,s} - μ_{v,s}
+    This matches how coupling columns contribute to the master.
+    """
     n = inst["n"]; S = inst["num_slots"]; D = inst["D"]
     rc_edges = {}
     for s in range(S):
         for u in range(n):
-            rc_edges[(s, u)] = [(v, D[u][v] - (dual_couple.get((team, s), 0.0) if v != team else 0.0))
-                                for v in range(n)]
+            lst = []
+            for v in range(n):
+                if v == team:
+                    rc = D[u][v]
+                else:
+                    rc = D[u][v] - dual_couple.get((team, s), 0.0) - dual_couple.get((v, s), 0.0)
+                lst.append((v, rc))
+            rc_edges[(s, u)] = lst
     return rc_edges
 
 def rc_forward_dp(inst, team, rc_edges):
@@ -360,17 +362,18 @@ def rc_backward_dp(inst, team, rc_edges):
 
 
 # =========================
-# Exact pricing (SPPRC) + Prop B + symmetry + forced HA/away target
+# Exact pricing (SPPRC) + Prop B + symmetry + forced HA/away target (K-best)
 # =========================
 
 Label = namedtuple("Label", ["cost", "u", "rlen", "last_ha", "mask", "prev"])
 
-def pricing_exact_propB(inst, team, dual_team, dual_couple, existing_cols,
-                        forced_inc, forced_exc, forced_home_slots, forced_away_slots,
-                        incumbent_UB, root_gap=None, apply_symmetry=True, eps=1e-8,
-                        force_away_to=None,         # {slot: homeTeam}
-                        accept_nonimproving=False   # allow returning columns even if rdc >= 0
-                        ):
+def pricing_exact_propB_Kbest(inst, team, dual_team, dual_couple, existing_cols,
+                              forced_inc, forced_exc, forced_home_slots, forced_away_slots,
+                              incumbent_UB, K_best=3, apply_symmetry=True, eps=1e-8,
+                              force_away_to=None, accept_nonimproving=False):
+    """
+    Return up to K_best negative reduced-cost tours for 'team'.
+    """
     n = inst["n"]; S = inst["num_slots"]; D = inst["D"]; U = inst["U"]; L = inst["L"]
     nbar = inst["nbar"]
     teams = inst["team_ids"]
@@ -380,7 +383,7 @@ def pricing_exact_propB(inst, team, dual_team, dual_couple, existing_cols,
 
     rc_edges = build_rc_edges(inst, team, dual_couple)
 
-    # enforce forced HA per slot (v==team => H; v!=team => A)
+    # forced HA per slot
     if forced_home_slots:
         for s in forced_home_slots:
             for u in range(n):
@@ -389,34 +392,34 @@ def pricing_exact_propB(inst, team, dual_team, dual_couple, existing_cols,
         for s in forced_away_slots:
             for u in range(n):
                 rc_edges[(s, u)] = [(v, rc) for (v, rc) in rc_edges[(s, u)] if v != team]
-
-    # enforce forced away target (slot -> homeTeam)
+    # forced specific away target
     if force_away_to:
         for s, h in force_away_to.items():
             for u in range(n):
                 rc_edges[(s, u)] = [(v, rc) for (v, rc) in rc_edges[(s, u)] if v == h]
 
-    # DP lower bounds for Prop B
+    # DP bounds for Prop B
     rc_fw = rc_forward_dp(inst, team, rc_edges)
     rc_bw = rc_backward_dp(inst, team, rc_edges)
 
-    # Prop B: prune arcs if lower bound >= 0 wrt dual_team
+    # Prop B: prune arcs if FW + arc + BW - π_t >= 0
     pruned = {}
     for (s, u), lst in rc_edges.items():
         kept = []
         for (v, rc) in lst:
             lb = rc_fw.get((s, u), 1e15) + rc + rc_bw.get((s+1, v), 1e15) - dual_team.get(team, 0.0)
-            if lb < -1e-9: kept.append((v, rc))
+            if lb < -1e-9:
+                kept.append((v, rc))
         pruned[(s, u)] = kept
 
-    # symmetry break at mid-layer for smallest id team
+    # symmetry at middle for min-id team
     if apply_symmetry and team == min(teams):
         s_mid = nbar
         for u in range(n):
             lst = pruned.get((s_mid, u), [])
             pruned[(s_mid, u)] = [(v, rc) for (v, rc) in lst if u <= v]
 
-    # SPPRC labeling (state: (u, rlen, last_ha, mask))
+    # labeling
     layer = [dict() for _ in range(S+1)]
     start = Label(cost=0.0, u=team, rlen=0, last_ha=None, mask=0, prev=None)
     layer[0][(team, 0, None, 0)] = start
@@ -444,10 +447,10 @@ def pricing_exact_propB(inst, team, dual_team, dual_couple, existing_cols,
                 if ha == 'A':
                     if v not in opp_index: continue
                     bit = 1 << opp_index[v]
-                    if (mask & bit) != 0:  # already visited
+                    if (mask & bit) != 0:
                         continue
                     new_mask = mask | bit
-                # forced excludes on away events only
+                # forced excludes (only meaningful for away)
                 banned = False
                 for (home, ss, away) in forced_exc:
                     if ss == s and ha == 'A' and away == team and home == v:
@@ -458,41 +461,43 @@ def pricing_exact_propB(inst, team, dual_team, dual_couple, existing_cols,
                       Label(cost=lab.cost + rc, u=v, rlen=new_rlen, last_ha=ha, mask=new_mask,
                             prev=(s, (u, rlen, last_ha, mask))))
 
-    # termination: return-to-home
-    best = None; best_rc_total = 0.0
+    # collect terminal candidates (K-best)
+    terms = []
     for (u, rlen, last_ha, mask), lab in layer[S].items():
         if mask != FULL: continue
         if last_ha is not None and rlen < L: continue
-        rc_total = lab.cost + inst["D"][u][team]
-        if (best is None) or (rc_total < best_rc_total - 1e-12):
-            best = lab; best_rc_total = rc_total
+        rc_total = lab.cost + D[u][team]
+        rdc = rc_total - dual_team.get(team, 0.0)
+        terms.append((rdc, rc_total, (u, rlen, last_ha, mask), lab))
 
-    if best is None:
-        return None
+    # sort by reduced cost
+    terms.sort(key=lambda x: x[0])
 
-    rdc = best_rc_total - dual_team.get(team, 0.0)
-    if (not accept_nonimproving) and rdc >= -1e-9:
-        return None
+    cols = []
+    for rdc, rc_total, key, lab in terms:
+        if (not accept_nonimproving) and rdc >= -1e-9:
+            break
+        # reconstruct venues
+        venues = []
+        cur = lab
+        s = S
+        while cur.prev is not None:
+            prev_s, prev_key = cur.prev
+            venues.append(cur.u)
+            s = prev_s
+            cur = layer[s][prev_key]
+        venues.reverse()
+        HA = ['H' if v == team else 'A' for v in venues]
+        opponents = [ (team if h == 'H' else v) for v, h in zip(venues, HA) ]
+        true_cost = tour_travel_cost(team, opponents, HA, D)
+        keycol = (tuple(opponents), tuple(HA))
+        if keycol in existing_cols.get(team, set()):
+            continue
+        cols.append({"opponents": opponents, "HA": HA, "cost": true_cost, "rdc": rdc})
+        if len(cols) >= K_best:
+            break
 
-    # reconstruct venues -> (opponents, HA)
-    venues = []
-    cur = best
-    s = S
-    while cur.prev is not None:
-        prev_s, prev_key = cur.prev
-        venues.append(cur.u)
-        s = prev_s
-        cur = layer[s][prev_key]
-    venues.reverse()
-    HA = ['H' if v == team else 'A' for v in venues]
-    opponents = [ (team if h == 'H' else v) for v, h in zip(venues, HA) ]
-    true_cost = tour_travel_cost(team, opponents, HA, inst["D"])
-
-    key = (tuple(opponents), tuple(HA))
-    if key in existing_cols.get(team, set()):
-        return None
-
-    return {"opponents": opponents, "HA": HA, "cost": true_cost, "rdc": rdc}
+    return cols if cols else None
 
 
 # =========================
@@ -500,10 +505,6 @@ def pricing_exact_propB(inst, team, dual_team, dual_couple, existing_cols,
 # =========================
 
 def expr_y(master, home, s, away):
-    """
-    Linear expression for y_{home,s,away} using AWAY columns only:
-    y(home,s,away) = sum_{idx} lam[away,idx] * [col(away,idx) has A at s vs home]
-    """
     expr = gp.LinExpr()
     for idx, col in enumerate(master.columns[away]):
         if col["HA"][s] == 'A' and col["opponents"][s] == home:
@@ -511,12 +512,6 @@ def expr_y(master, home, s, away):
     return expr
 
 def separate_nrc_cuts(master, eps=1e-6, max_new_cuts=200):
-    """
-    Scan current LP solution and add NRC cuts:
-      y(i,s,j) + y(j,s+1,i) <= 1
-      y(j,s,i) + y(i,s+1,j) <= 1
-    Return the number of cuts added.
-    """
     added = 0
     teams = master.inst["team_ids"]
     S = master.inst["num_slots"]
@@ -555,19 +550,10 @@ def separate_nrc_cuts(master, eps=1e-6, max_new_cuts=200):
 
 
 # =========================
-# Proposition A (tour elimination)
+# Proposition A (tour elimination) — RC fixed (subtract both μ_{t,s}, μ_{opp,s})
 # =========================
 
 def apply_proposition_A(master, dual_team, dual_couple, incumbent_UB, node_LB, safety_keep=1):
-    """
-    Fix to 0 any column whose reduced cost >= (UB - LB).
-    Reduced cost consistent with pricing model:
-      rc(col for team t) = cost
-                           - dual_team[t]
-                           - sum_{s: A} dual_couple[(t,s)]
-    Keeps at least 'safety_keep' columns with the smallest rc per team (avoid infeasibility).
-    Returns number of variables fixed to 0.
-    """
     threshold = max(0.0, incumbent_UB - node_LB)
     fixed = 0
     for t in master.inst["team_ids"]:
@@ -576,7 +562,9 @@ def apply_proposition_A(master, dual_team, dual_couple, incumbent_UB, node_LB, s
             rc = col["cost"] - dual_team.get(t, 0.0)
             for s in range(master.S):
                 if col["HA"][s] == 'A':
+                    opp = col["opponents"][s]
                     rc -= dual_couple.get((t, s), 0.0)
+                    rc -= dual_couple.get((opp, s), 0.0)
             rcs.append((rc, idx))
         rcs_sorted = sorted(rcs, key=lambda x: x[0])
         keep = set(idx for _, idx in rcs_sorted[:safety_keep])
@@ -596,11 +584,6 @@ def apply_proposition_A(master, dual_team, dual_couple, incumbent_UB, node_LB, s
 # =========================
 
 def seed_initial_columns(inst, master, extra_2opt=True, max_extra_per_team=20, tries_per_team=200):
-    """
-    Build the initial column pool:
-      • One Berger double round-robin tour per team.
-      • Optional: up to 'max_extra_per_team' improved tours per team via 2-opt (away-only swaps).
-    """
     teams = inst["team_ids"]
     tours = build_seed_tours(inst)
 
@@ -626,7 +609,6 @@ def seed_initial_columns(inst, master, extra_2opt=True, max_extra_per_team=20, t
                 if added >= max_extra_per_team:
                     break
 
-# Alias in case of accidental typo elsewhere
 def seed_initital_columns(*args, **kwargs):
     return seed_initial_columns(*args, **kwargs)
 
@@ -634,10 +616,7 @@ def seed_initital_columns(*args, **kwargs):
 def ensure_branch_feasibility(inst, master,
                               forced_inc, forced_home, forced_away,
                               existing_cols):
-    """
-    Make sure the master has at least one column per affected team that satisfies the
-    branch constraints at this node. Uses pricing with zero duals and accept_nonimproving=True.
-    """
+    """Add at least one compatible column per affected team at this node."""
     zero_duals_team = {t: 0.0 for t in inst["team_ids"]}
     zero_duals_cpl  = {(t, s): 0.0 for t in inst["team_ids"] for s in range(inst["num_slots"])}
 
@@ -647,52 +626,56 @@ def ensure_branch_feasibility(inst, master,
             master.columns[team].append(col)
             existing_cols[team].add(key)
 
-    # Include events: ensure AWAY team has a column realizing (home, s, away)
+    # Include events: ensure away team has a column realizing (home, s, away)
     for (home, s, away) in forced_inc:
-        col = pricing_exact_propB(inst, away, zero_duals_team, zero_duals_cpl, existing_cols,
-                                  forced_inc=set(), forced_exc=set(),
-                                  forced_home_slots=set(), forced_away_slots={s},
-                                  incumbent_UB=float('inf'),
-                                  apply_symmetry=False,
-                                  force_away_to={s: home},
-                                  accept_nonimproving=True)
-        if col:
+        cols = pricing_exact_propB_Kbest(inst, away, zero_duals_team, zero_duals_cpl, existing_cols,
+                                         forced_inc=set(), forced_exc=set(),
+                                         forced_home_slots=set(), forced_away_slots={s},
+                                         incumbent_UB=float('inf'),
+                                         apply_symmetry=False,
+                                         force_away_to={s: home},
+                                         accept_nonimproving=True, K_best=1)
+        if cols:
+            col = cols[0]
             add_if_new(away, {"opponents": col["opponents"], "HA": col["HA"], "cost": col["cost"]})
 
     # Forced Away
     for (t, s) in forced_away:
-        col = pricing_exact_propB(inst, t, zero_duals_team, zero_duals_cpl, existing_cols,
-                                  forced_inc=set(), forced_exc=set(),
-                                  forced_home_slots=set(), forced_away_slots={s},
-                                  incumbent_UB=float('inf'),
-                                  apply_symmetry=False,
-                                  force_away_to=None,
-                                  accept_nonimproving=True)
-        if col:
+        cols = pricing_exact_propB_Kbest(inst, t, zero_duals_team, zero_duals_cpl, existing_cols,
+                                         forced_inc=set(), forced_exc=set(),
+                                         forced_home_slots=set(), forced_away_slots={s},
+                                         incumbent_UB=float('inf'),
+                                         apply_symmetry=False,
+                                         force_away_to=None,
+                                         accept_nonimproving=True, K_best=1)
+        if cols:
+            col = cols[0]
             add_if_new(t, {"opponents": col["opponents"], "HA": col["HA"], "cost": col["cost"]})
 
     # Forced Home
     for (t, s) in forced_home:
-        col = pricing_exact_propB(inst, t, zero_duals_team, zero_duals_cpl, existing_cols,
-                                  forced_inc=set(), forced_exc=set(),
-                                  forced_home_slots={s}, forced_away_slots=set(),
-                                  incumbent_UB=float('inf'),
-                                  apply_symmetry=False,
-                                  force_away_to=None,
-                                  accept_nonimproving=True)
-        if col:
+        cols = pricing_exact_propB_Kbest(inst, t, zero_duals_team, zero_duals_cpl, existing_cols,
+                                         forced_inc=set(), forced_exc=set(),
+                                         forced_home_slots={s}, forced_away_slots=set(),
+                                         incumbent_UB=float('inf'),
+                                         apply_symmetry=False,
+                                         force_away_to=None,
+                                         accept_nonimproving=True, K_best=1)
+        if cols:
+            col = cols[0]
             add_if_new(t, {"opponents": col["opponents"], "HA": col["HA"], "cost": col["cost"]})
 
 
 # =========================
-# Column generation (extended with NRC + Prop A)
+# Column generation (NRC + Prop A + K-best pricing)
 # =========================
 
 def column_generation_with_branch(inst,
                                   forced_inc, forced_exc,
                                   forced_home=None, forced_away=None,
                                   incumbent_UB=float('inf'),
-                                  time_limit_per_lp=30, max_iters=200, gurobi_output=True):
+                                  time_limit_per_lp=None, max_iters=200, gurobi_output=True,
+                                  K_best=3):
     teams = inst["team_ids"]
     forced_home = set(forced_home) if forced_home else set()
     forced_away = set(forced_away) if forced_away else set()
@@ -709,14 +692,14 @@ def column_generation_with_branch(inst,
     existing_cols = {t: set((tuple(col["opponents"]), tuple(col["HA"])) for col in master.columns[t])
                      for t in teams}
 
-    # Ensure feasibility under branch constraints BEFORE building
+    # Ensure feasibility for this node
     ensure_branch_feasibility(inst, master,
                               forced_inc=set(forced_inc),
                               forced_home=set(forced_home),
                               forced_away=set(forced_away),
                               existing_cols=existing_cols)
 
-    # Recompute existing (in case we added)
+    # Refresh existing
     existing_cols = {t: set((tuple(col["opponents"]), tuple(col["HA"])) for col in master.columns[t])
                      for t in teams}
 
@@ -738,33 +721,35 @@ def column_generation_with_branch(inst,
             break
         node_LB = obj
 
-        # Separate NRC cuts (if violated)
+        # Separate NRC
         n_added = separate_nrc_cuts(master, eps=1e-6, max_new_cuts=200)
         if n_added > 0:
             print(f"[CG]   Added {n_added} NRC cuts; re-optimizing LP.", flush=True)
             continue
 
-        # Proposition A: eliminate columns with rc >= UB - LB (keep at least 1 per team)
+        # Prop A
         n_fixed = apply_proposition_A(master, dual_team, dual_couple,
                                       incumbent_UB=incumbent_UB, node_LB=node_LB, safety_keep=1)
         if n_fixed > 0:
             print(f"[CG]   Prop A fixed {n_fixed} columns (UB-LB={max(0.0,incumbent_UB-node_LB):.2f}); re-optimizing LP.", flush=True)
             continue
 
-        # Pricing
+        # K-best Pricing
         found_any = False
         for t in teams:
             forced_home_slots = {s for (tt, s) in forced_home if tt == t}
             forced_away_slots = {s for (tt, s) in forced_away if tt == t}
-            col = pricing_exact_propB(inst, t, dual_team, dual_couple, existing_cols,
-                                      forced_inc, forced_exc,
-                                      forced_home_slots, forced_away_slots,
-                                      incumbent_UB, eps=1e-8)
-            if col is not None and col["rdc"] < -1e-8:
-                master.add_column(t, {"opponents": col["opponents"], "HA": col["HA"], "cost": col["cost"]})
-                existing_cols[t].add((tuple(col["opponents"]), tuple(col["HA"])))
-                found_any = True
-                print(f"[CG]   + Column for team {t}: rdc={col['rdc']:.2f}, cost={col['cost']}", flush=True)
+            cols = pricing_exact_propB_Kbest(inst, t, dual_team, dual_couple, existing_cols,
+                                             forced_inc, forced_exc,
+                                             forced_home_slots, forced_away_slots,
+                                             incumbent_UB, K_best=K_best, eps=1e-8)
+            if cols:
+                for col in cols:
+                    if col["rdc"] < -1e-8:
+                        master.add_column(t, {"opponents": col["opponents"], "HA": col["HA"], "cost": col["cost"]})
+                        existing_cols[t].add((tuple(col["opponents"]), tuple(col["HA"])))
+                        found_any = True
+                        print(f"[CG]   + Column for team {t}: rdc={col['rdc']:.6f}, cost={col['cost']}", flush=True)
 
         if not found_any:
             print("[CG]   No improving columns -> LP optimal for this node.", flush=True)
@@ -781,11 +766,6 @@ def column_generation_with_branch(inst,
 # =========================
 
 def rank_fractional_events(master, eps=1e-6):
-    """
-    Build fractional event candidates ONLY from AWAY columns:
-      value(home,s,away) = sum_{idx} lam[away,idx] * [col(away,idx) has A at s and opp[s]==home]
-    Return list of (event, value) sorted by closeness to 0.5.
-    """
     event_val = defaultdict(float)
     for (t, idx), var in master.lam.items():
         val = var.X if var.X is not None else 0.0
@@ -803,7 +783,6 @@ def rank_fractional_events(master, eps=1e-6):
     return [(ev, val) for _, ev, val in items]
 
 def pick_fractional_HA(master, eps=1e-6):
-    """Pick a (team, slot) with fractional away share closest to 0.5."""
     best = None; best_gap = 1.0
     for t in master.inst["team_ids"]:
         for s in range(master.S):
@@ -818,32 +797,26 @@ def pick_fractional_HA(master, eps=1e-6):
                     best = (t, s, away_frac)
     return best
 
-
 def strong_branch_eval(inst, node_inc, node_exc, node_home, node_away, branch_obj,
-                       incumbent_UB, time_limit_probe=6):
-    """
-    Evaluate include/exclude (event) or force home/away (HA) by running limited CG at children.
-    """
+                       incumbent_UB, time_limit_probe=10, K_best=2):
     def run_cg(inc, exc, fh, fa):
         _, st, obj = column_generation_with_branch(inst, inc, exc, fh, fa,
                                                    incumbent_UB=incumbent_UB,
-                                                   time_limit_per_lp=time_limit_probe,
-                                                   max_iters=60, gurobi_output=True)
+                                                   time_limit_per_lp=None,
+                                                   max_iters=80, gurobi_output=False,
+                                                   K_best=K_best)
         return obj if st in (GRB.OPTIMAL, GRB.TIME_LIMIT) else float('inf')
 
-    # Event (home, s, away)
     if isinstance(branch_obj, tuple) and len(branch_obj) == 3 and isinstance(branch_obj[1], int):
         ev = branch_obj
         inc = set(node_inc); exc = set(node_exc)
         fh = set(node_home); fa = set(node_away)
 
         inc.add(ev); b_inc = run_cg(inc, exc, fh, fa)
-
         inc = set(node_inc); exc = set(node_exc); exc.add(ev)
         b_exc = run_cg(inc, exc, fh, fa)
         return b_inc, b_exc
 
-    # HA fallback: ('HA', team, s)
     _, team, s = branch_obj
     fh = set(node_home); fa = set(node_away)
     inc = set(node_inc); exc = set(node_exc)
@@ -861,7 +834,7 @@ def strong_branch_eval(inst, node_inc, node_exc, node_home, node_away, branch_ob
 # Best-bound Branch-and-Price
 # =========================
 
-def branch_and_price_bestbound(inst, time_limit_minutes=30,
+def branch_and_price_bestbound(inst, time_limit_minutes=60,
                                b1=5, MaxCand=30, gamma_c=1.7):
     start = time.time()
     limit = 60 * time_limit_minutes
@@ -882,61 +855,55 @@ def branch_and_price_bestbound(inst, time_limit_minutes=30,
               f"|inc|={len(node['forced_inc'])}, |exc|={len(node['forced_exc'])}, "
               f"|home|={len(node['force_home'])}, |away|={len(node['force_away'])}", flush=True)
 
-        # Column generation (LP) at this node
         master, status, lpobj = column_generation_with_branch(
             inst,
             set(node["forced_inc"]), set(node["forced_exc"]),
             set(node["force_home"]), set(node["force_away"]),
             incumbent_UB=incumbent["obj"],
-            time_limit_per_lp=30, max_iters=200,
-            gurobi_output=True
+            time_limit_per_lp=None, max_iters=200,
+            gurobi_output=True, K_best=3
         )
         if status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
             print("[B&B]  LP failed; prune node.", flush=True)
             continue
-        if lpobj >= incumbent["obj"] - 1e-6:
+        if lpobj >= incumbent["obj"] - 1e-9:
             print(f"[B&B]  Pruned by bound: lpobj={lpobj:.2f} >= incumbent={incumbent['obj']:.2f}", flush=True)
             continue
 
-        # Check LP integrality BEFORE any IP solve
+        # LP integrality
         lp_all_int = True
         for v in master.model.getVars():
-            if abs(v.X - round(v.X)) > 1e-6:
-                lp_all_int = False
-                break
+            if abs(v.X - round(v.X)) > 1e-9:
+                lp_all_int = False; break
         if lp_all_int:
             sol = {}
             for (t, idx), var in master.lam.items():
                 if var.X > 0.5:
                     sol[t] = (idx, master.columns[t][idx])
-            if lpobj < incumbent["obj"] - 1e-6:
-                incumbent["obj"] = lpobj
-                incumbent["sol"] = sol
+            if lpobj < incumbent["obj"] - 1e-9:
+                incumbent["obj"] = lpobj; incumbent["sol"] = sol
                 print(f"[B&B]  LP integral at {lpobj:.2f} -> new incumbent; node closed.", flush=True)
             else:
                 print("[B&B]  LP integral; node closed.", flush=True)
             continue
 
-        # Build branching candidates from this LP
+        # Branching candidates from this LP
         cand_events = rank_fractional_events(master)
-
         fallback_HA = None
         if not cand_events:
             fallback_HA = pick_fractional_HA(master)
             if fallback_HA is None:
                 print("[B&B]  No fractional events or H/A; closing node.", flush=True)
                 continue
-            print(f"[B&B]  Fallback HA branching candidate: (team={fallback_HA[0]}, slot={fallback_HA[1]}, away_frac={fallback_HA[2]:.3f})", flush=True)
+            print(f"[B&B]  Fallback HA candidate: (team={fallback_HA[0]}, slot={fallback_HA[1]}, away_frac={fallback_HA[2]:.3f})", flush=True)
 
-        # Optional IP to improve UB (root 180s; others 60s) AFTER capturing LP candidates
+        # Optional IP to improve UB (root 180s; others 60s)
         ip_time = 180 if nodes == 1 else 60
         st_ip, obj_ip, sol_ip = master.solve_ip(time_limit=ip_time)
-        if obj_ip is not None and obj_ip < incumbent["obj"] - 1e-6:
-            incumbent["obj"] = obj_ip
-            incumbent["sol"] = sol_ip
+        if obj_ip is not None and obj_ip < incumbent["obj"] - 1e-9:
+            incumbent["obj"] = obj_ip; incumbent["sol"] = sol_ip
             print(f"[B&B]  New incumbent from IP: {obj_ip:.2f}", flush=True)
 
-        # Root gap initialization
         if root_gap is None:
             if incumbent["obj"] < float('inf'):
                 root_gap = max(0.0, incumbent["obj"] - lpobj)
@@ -947,25 +914,24 @@ def branch_and_price_bestbound(inst, time_limit_minutes=30,
         # Branch
         if cand_events:
             node_gap = max(0.0, incumbent["obj"] - lpobj)
-            ratio = min(1.0, (node_gap / (root_gap + 1e-9))) if root_gap > 0 else 1.0
+            ratio = min(1.0, (node_gap / (root_gap + 1e-12))) if root_gap > 0 else 1.0
             num_cands = int(b1 + MaxCand * (ratio ** gamma_c))
             num_cands = max(1, min(len(cand_events), num_cands))
             cand_events = cand_events[:num_cands]
             print(f"[B&B]  Strong branching over {len(cand_events)} event-candidates (ratio={ratio:.3f}).", flush=True)
 
-            best_choice = None
-            best_worse = -1e18
+            best_choice = None; best_worse = -1e18
             for (ev, val) in cand_events:
                 b_inc, b_exc = strong_branch_eval(inst,
                                                   node["forced_inc"], node["forced_exc"],
                                                   node["force_home"], node["force_away"],
                                                   ev,
-                                                  incumbent_UB=incumbent["obj"], time_limit_probe=6)
+                                                  incumbent_UB=incumbent["obj"],
+                                                  time_limit_probe=10, K_best=2)
                 worse = min(b_inc, b_exc)
                 print(f"        cand {ev} -> include={b_inc:.2f}, exclude={b_exc:.2f}", flush=True)
                 if worse > best_worse:
-                    best_worse = worse
-                    best_choice = ("EV", ev, b_inc, b_exc)
+                    best_worse = worse; best_choice = ("EV", ev, b_inc, b_exc)
 
             if best_choice is None:
                 print("[B&B]  No candidate produced bounds; close node.", flush=True)
@@ -982,37 +948,31 @@ def branch_and_price_bestbound(inst, time_limit_minutes=30,
                          "forced_exc": frozenset(set(node["forced_exc"]) | {ev}),
                          "force_home": node["force_home"], "force_away": node["force_away"],
                          "bound": b_exc}
-
-            if b_inc < incumbent["obj"] - 1e-6:
+            if b_inc < incumbent["obj"] - 1e-9:
                 heapq.heappush(pq, (b_inc, child_inc))
-            if b_exc < incumbent["obj"] - 1e-6:
+            if b_exc < incumbent["obj"] - 1e-9:
                 heapq.heappush(pq, (b_exc, child_exc))
 
         else:
-            # HA fallback
             t, s, away_frac = fallback_HA
-            branch_obj = ('HA', t, s)
             b_home, b_away = strong_branch_eval(inst,
                                                 node["forced_inc"], node["forced_exc"],
                                                 node["force_home"], node["force_away"],
-                                                branch_obj,
-                                                incumbent_UB=incumbent["obj"], time_limit_probe=6)
+                                                ('HA', t, s),
+                                                incumbent_UB=incumbent["obj"],
+                                                time_limit_probe=10, K_best=2)
             print(f"[B&B]  HA strong-branch (team={t}, slot={s}) -> forceHome={b_home:.2f}, forceAway={b_away:.2f}", flush=True)
 
-            child_home = {"forced_inc": node["forced_inc"],
-                          "forced_exc": node["forced_exc"],
+            child_home = {"forced_inc": node["forced_inc"], "forced_exc": node["forced_exc"],
                           "force_home": frozenset(set(node["force_home"]) | {(t, s)}),
-                          "force_away": node["force_away"],
-                          "bound": b_home}
-            child_away = {"forced_inc": node["forced_inc"],
-                          "forced_exc": node["forced_exc"],
+                          "force_away": node["force_away"], "bound": b_home}
+            child_away = {"forced_inc": node["forced_inc"], "forced_exc": node["forced_exc"],
                           "force_home": node["force_home"],
                           "force_away": frozenset(set(node["force_away"]) | {(t, s)}),
                           "bound": b_away}
-
-            if b_home < incumbent["obj"] - 1e-6:
+            if b_home < incumbent["obj"] - 1e-9:
                 heapq.heappush(pq, (b_home, child_home))
-            if b_away < incumbent["obj"] - 1e-6:
+            if b_away < incumbent["obj"] - 1e-9:
                 heapq.heappush(pq, (b_away, child_away))
 
         if time.time() - start > limit:
@@ -1066,7 +1026,7 @@ def main(xml_path):
     print(f"Parsed instance: {inst['n']} teams, {inst['num_slots']} slots; U={inst['U']}, L={inst['L']}", flush=True)
     random.seed(42)
     start = time.time()
-    incumbent, nodes = branch_and_price_bestbound(inst, time_limit_minutes=30,
+    incumbent, nodes = branch_and_price_bestbound(inst, time_limit_minutes=60,
                                                   b1=5, MaxCand=30, gamma_c=1.7)
     elapsed = time.time() - start
     print(f"\nSearch finished in {elapsed:.2f}s, nodes processed: {nodes}", flush=True)
@@ -1075,6 +1035,6 @@ def main(xml_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python BNP_NL8_PropB_BP.py NL8.xml", flush=True)
+        print("Usage: python BNP_NL8_PropB_BP_rcfix_kbest.py NL8.xml", flush=True)
         sys.exit(1)
     main(sys.argv[1])
