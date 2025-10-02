@@ -12,10 +12,36 @@ class TabuSearch:
         self.max_iterations = max_iterations
 
     def recovery_n1(self, schedule, t1, t2, r):
+        # Should return the new schedule after swapping teams t1 and t2 in round r and doing recovery
         pass
     
     def recovery_n2(self, schedule, t1, r1, r2):
+        # Should return the new schedule after swapping rounds r1 and r2 for team t1 and doing recovery
         pass
+
+    def get_neighbors(self, solution):
+        neighbors = []
+
+        for t1 in range(solution.n):
+            for t2 in range(solution.n):
+                if t1 != t2:
+                    for r in range(solution.rounds):
+                        new_schedule = self.recovery_n1(solution.schedule.copy(), t1, t2, r)
+                        new_solution = Solution(solution.n, solution.distance_matrix)
+                        new_solution.set_schedule(np.array(new_schedule))
+                        neighbors.append(new_solution)
+        
+        for r1 in range(solution.rounds):
+            for r2 in range(solution.rounds):
+                if r1 != r2:
+                    for t in range(solution.n):
+                        new_schedule = self.recovery_n2(solution.schedule.copy(), t, r1, r2)
+                        new_solution = Solution(solution.n, solution.distance_matrix)
+                        new_solution.set_schedule(np.array(new_schedule))
+                        neighbors.append(new_solution)
+
+        return neighbors
+
 
     def search(self):
         iterations = 0
