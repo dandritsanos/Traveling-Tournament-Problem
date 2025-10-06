@@ -1,6 +1,22 @@
-from ttp import Solution
+from ttp import Solution, check_constraint_1, check_constraint_2, check_constraint_3, check_constraints, check_constraint_4
 import numpy as np
+from collections import defaultdict
 
+def duplicate_indexes(lst):
+    """
+    Returns a sorted list of indexes of all elements that appear more than once.
+    """
+    seen = {}
+    dup_indexes = set()
+
+    for i, val in enumerate(lst):
+        if val in seen:
+            dup_indexes.add(seen[val])  # first occurrence
+            dup_indexes.add(i)          # current duplicate
+        else:
+            seen[val] = i
+
+    return sorted(dup_indexes)
 
 class TabuSearch:
 
@@ -11,9 +27,60 @@ class TabuSearch:
         self.tabu_size = tabu_size
         self.max_iterations = max_iterations
 
-    def recovery_n1(self, schedule, t1, t2, r):
-        # Should return the new schedule after swapping teams t1 and t2 in round r and doing recovery
-        pass
+    def swap_teams(self, schedule, t1, t2, r):
+        # Swap the games of team t1 and t2 in round r
+        opponent_t1 = schedule[t1, r]
+        opponent_t2 = schedule[t2, r]
+        
+        schedule[t1, r] = opponent_t2
+        schedule[t2, r] = opponent_t1
+
+        if opponent_t1 > 0:
+            # Is t1 playing at home
+            schedule[abs(opponent_t1) - 1, r] = -(t2 + 1)
+        else:
+            schedule[abs(opponent_t1) - 1, r] = (t2 + 1)
+
+        if opponent_t2 > 0:
+            # Is t2 playing at home
+            schedule[abs(opponent_t2) - 1, r] = -(t1 + 1)
+        else:
+            schedule[abs(opponent_t2) - 1, r] = (t1 + 1)
+
+        return schedule
+
+    def recovery_n1(self, schedule, t1, t2, r, max_length = 9):
+        
+        altered_rounds = set()
+        
+        first_new_schedule = self.swap_teams(schedule, t1, t2, r).copy()
+        if not check_constraint_4(first_new_schedule, first_new_schedule.shape[0]):
+            print("Started by switching teams into itself, break chain")
+            return False
+        altered_rounds.add(r)
+
+        while len(altered_rounds) < max_length and (check_constraint_1(first_new_schedule, first_new_schedule.shape[0]) == False or 
+                                                    check_constraint_4(first_new_schedule, first_new_schedule.shape[0]) == False
+            ):
+            # Find duplicates in t1 schedule
+            dup_indexes = duplicate_indexes(first_new_schedule[t1, :])
+            next_switch = (set(dup_indexes) - altered_rounds).pop()
+            
+            self.swap_teams(first_new_schedule, t1, t2, next_switch)
+            altered_rounds.add(next_switch)
+
+        if len(altered_rounds) == max_length:
+            print("Max length reached, returning None")
+            return False
+        
+        else:
+            print(f"Final schedule after recovery in {len(altered_rounds)} steps:")
+            print(first_new_schedule)
+            return first_new_schedule
+
+            
+
+
     
     def recovery_n2(self, schedule, t1, r1, r2):
         # Should return the new schedule after swapping rounds r1 and r2 for team t1 and doing recovery
@@ -25,6 +92,7 @@ class TabuSearch:
         for t1 in range(solution.n):
             for t2 in range(solution.n):
                 if t1 != t2:
+                    # Note that t1 and t2 are 0-indexed
                     for r in range(solution.rounds):
                         new_schedule = self.recovery_n1(solution.schedule.copy(), t1, t2, r)
                         new_solution = Solution(solution.n, solution.distance_matrix)
@@ -92,14 +160,7 @@ if __name__ == "__main__":
     solution = Solution(n, distance_matrix)
     solution.set_schedule(schedule)
 
-    print("Cost of the schedule:", solution.calculate_cost())
-    print("Constraints satisfied:", solution.check_constraints())
+    TS = TabuSearch(solution)
 
-    tabu_search = TabuSearch(solution, tabu_size=5, max_iterations=50)
-    swap_example = tabu_search.recovery_n1(schedule.copy(), 1, 2, 2)
-    print("Schedule after N1 swap (teams 1 and 2 in round 2):")
-    print(np.array(swap_example))
-    new_solution = Solution(n, distance_matrix)
-    new_solution.set_schedule(np.array(swap_example))
-    print("Cost after N1 swap:", new_solution.calculate_cost())
-    print("Constraints satisfied after N1 swap:", new_solution.check_constraints())
+    print(TS.current_solution.schedule)
+    TS.recovery_n1(TS.current_solution.schedule, 0, 1, 4)
