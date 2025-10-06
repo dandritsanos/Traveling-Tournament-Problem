@@ -589,49 +589,49 @@ def solve_by_column_generation(inst, time_limit=1800, threads=4, outdir="./resul
 
     # create vars for current columns
     yvars = {}
+
     def rebuild_master_model():
         master.reset()
-        # create continuous vars y_{i,kidx}
         yvars.clear()
+
+        # Create continuous y variables
         for i in range(N):
             for c_idx, itin in enumerate(columns[i]):
                 y = master.addVar(vtype=GRB.CONTINUOUS, lb=0.0, name=f"y_{i}_{c_idx}")
-                yvars[(i,c_idx)] = (y, itin)
+                yvars[(i, c_idx)] = (y, itin)
         master.update()
-        # constraints (ordered pairs)
-        pair_constr.clear()
-        for (i,j) in ordered_pairs:
-            expr = quicksum(yvars[(i,c_idx)][0] for c_idx in range(len(columns[i]))
-                            if any((itin.home[r] and itin.opp[r]==j) for itin in [columns[i][c_idx]] for r in range(R)) )
-            # Note: the above line is inefficient; we'll build a more careful mapping below
-            # To keep code readable, rebuild pair contributions using loops
-        # Instead of building above, we'll build constraints explicitly
-        # Build a mapping for each yvar which ordered pairs it covers
-        cover_map = defaultdict(list)  # (i,j) -> list of yvars that cover i hosts j in some round in that itinerary
+
+        # --- Build ordered pair coverage map ---
+        cover_map = defaultdict(list)  # (i,j) -> list of yvars covering i hosts j in some round
         for i in range(N):
             for c_idx, itin in enumerate(columns[i]):
-                yvar = yvars[(i,c_idx)][0]
+                yvar = yvars[(i, c_idx)][0]
                 for r in range(R):
                     if itin.home[r]:
                         j = itin.opp[r]
-                        cover_map[(i,j)].append(yvar)
-        # Now add pair constraints
+                        cover_map[(i, j)].append(yvar)
+
+        # --- Ordered pair constraints ---
         pair_constr_local = {}
-        for (i,j) in ordered_pairs:
-            lst = cover_map.get((i,j), [])
-            # It's possible no current column covers (i,j) yet -> then master infeasible; we should ensure initial columns cover all ordered pairs
-            # To avoid infeasibility, if no columns cover (i,j), we will later trigger pricing and add columns.
-            pair_constr_local[(i,j)] = master.addConstr(quicksum(lst) == 1, name=f"pair_cov_{i}_{j}")
-        # Team choice constraints
+        for (i, j) in ordered_pairs:
+            lst = cover_map.get((i, j), [])
+            # If no columns yet cover this pair, still add a constraint with an empty LHS
+            pair_constr_local[(i, j)] = master.addConstr(quicksum(lst) == 1, name=f"pair_cov_{i}_{j}")
+
+        # --- Team choice constraints ---
         team_constr_local = {}
         for i in range(N):
-            lst = [yvars[(i,c_idx)][0] for c_idx in range(len(columns[i]))]
+            lst = [yvars[(i, c_idx)][0] for c_idx in range(len(columns[i]))]
             team_constr_local[i] = master.addConstr(quicksum(lst) == 1, name=f"team_choice_{i}")
-        # objective
-        obj_expr = quicksum( yvars[(i,c_idx)][0] * itinerary_travel_cost(columns[i][c_idx])
-                             for i in range(N) for c_idx in range(len(columns[i])) )
+
+        # --- Objective: total travel cost ---
+        obj_expr = quicksum(
+            yvars[(i, c_idx)][0] * itinerary_travel_cost(columns[i][c_idx])
+            for i in range(N) for c_idx in range(len(columns[i]))
+        )
         master.setObjective(obj_expr, GRB.MINIMIZE)
         master.update()
+
         return pair_constr_local, team_constr_local
 
     # Ensure initial columns cover all ordered pairs (if not, add trivial columns by splitting initial circle method)
