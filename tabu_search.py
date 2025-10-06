@@ -77,14 +77,65 @@ class TabuSearch:
             print(f"Final schedule after recovery in {len(altered_rounds)} steps:")
             print(first_new_schedule)
             return first_new_schedule
-
-            
-
-
     
     def recovery_n2(self, schedule, t1, r1, r2):
-        # Should return the new schedule after swapping rounds r1 and r2 for team t1 and doing recovery
-        pass
+        #Swap the games of team t1 in rounds r1 and r2
+        opponent_r1 = abs(schedule[t1, r1])
+        opponent_r2 = abs(schedule[t1, r2])
+
+        schedule_changed = schedule.copy()
+        # Array which indexes represent teams, and values are sets of their opponents in rounds r1 and r2
+        teams_opponents = [set() for _ in range(schedule.shape[0])]  
+
+        for team in range(schedule.shape[0]):
+            opponent_r1 = abs(schedule_changed[team, r1])
+            opponent_r2 = abs(schedule_changed[team, r2])
+            teams_opponents[team].add(opponent_r1)
+            teams_opponents[team].add(opponent_r2)
+
+
+        stack = [t1]
+        visited = set()
+        teams_to_swap = []
+
+        # DFS to find all teams connected to t1 through opponents in r1 and r2
+        while stack:
+            current_team = stack.pop()
+            if current_team not in visited:
+                visited.add(current_team)
+                teams_to_swap.append(current_team)
+                for opponent in teams_opponents[current_team]:
+                    if opponent -1 not in visited:
+                        stack.append(opponent - 1)
+
+        # Now swap the games in rounds r1 and r2 for all teams in teams_to_swap (team correlated with each other through opponents in r1 and r2)
+        for team in teams_to_swap:
+            schedule_changed[team, r1], schedule_changed[team, r2] = schedule_changed[team, r2], schedule_changed[team, r1]
+
+        return schedule_changed
+
+    def recovery_n3(self, schedule, r1, r2):
+        # Swap the rounds r1 and r2 for all teams
+        schedule_changed = schedule.copy()
+        schedule_changed[:, r1], schedule_changed[:, r2] = schedule_changed[:, r2].copy(), schedule_changed[:, r1].copy()
+        return schedule_changed
+
+    def recovery_n4(self, schedule, t1, t2):
+        # Swap the entire schedules of teams t1 and t2 (except for their direct matches)
+        schedule_changed = schedule.copy()
+        for r in range(schedule.shape[1]):
+            if abs(schedule_changed[t1, r]) != t2 + 1 and abs(schedule_changed[t2, r]) != t1 + 1:
+                schedule_changed[t1, r], schedule_changed[t2, r] = schedule_changed[t2, r], schedule_changed[t1, r]
+        return schedule_changed
+    
+    def recovery_n5(self, schedule, t1, t2):
+        # Swap home/away status of all matches between teams t1 and t2
+        schedule_changed = schedule.copy()
+        for r in range(schedule.shape[1]):
+            if abs(schedule_changed[t1, r]) == t2 + 1:
+                schedule_changed[t1, r] = -schedule_changed[t1, r]
+                schedule_changed[t2, r] = -schedule_changed[t2, r]
+        return schedule_changed
 
     def get_neighbors(self, solution):
         neighbors = []
@@ -163,4 +214,10 @@ if __name__ == "__main__":
     TS = TabuSearch(solution)
 
     print(TS.current_solution.schedule)
-    TS.recovery_n1(TS.current_solution.schedule, 0, 1, 4)
+    #TS.current_solution.schedule = TS.recovery_n2(TS.current_solution.schedule, 1, 0, 3)
+    #TS.current_solution.schedule = TS.recovery_n3(TS.current_solution.schedule, 0, 3)    
+    #TS.current_solution.schedule = TS.recovery_n4(TS.current_solution.schedule, 2, 3)
+    TS.current_solution.schedule = TS.recovery_n5(TS.current_solution.schedule, 0, 1)
+    print(TS.current_solution.schedule)
+    print(check_constraints(TS.current_solution.schedule, TS.current_solution.n))
+
