@@ -4,16 +4,10 @@ from greedy import GreedySolver
 import numpy as np
 import random
 import pandas as pd
+from xml_loader import load_instance
 
 if __name__ == "__main__":
-    n = 6
-
-    distance_matrix = np.array([[0, 10, 15, 20, 25, 30],
-                                [10, 0, 35, 25, 30, 20],
-                                [15, 35, 0, 30, 20, 25],
-                                [20, 25, 30, 0, 15, 10],
-                                [25, 30, 20, 15, 0, 35],
-                                [30, 20, 25, 10, 35, 0]])
+    n, distance_matrix = load_instance('NL6.xml')
 
     solver = GreedySolver(n, distance_matrix)
     sol = solver.create_solution()
@@ -26,5 +20,7 @@ if __name__ == "__main__":
     print(sol.calculate_cost())
 
     TS = TabuSearch(sol)
-    
-    print(check_constraints(TS.recovery_n1(TS.current_solution.schedule, 0, 3, 4), n))
+    TS.search()
+    print("\nOptimized Schedule:")
+    for r, round in enumerate(TS.best_solution.schedule):
+        print(f"Team {r + 1}: {round}")

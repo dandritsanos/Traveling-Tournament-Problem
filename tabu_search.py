@@ -20,7 +20,7 @@ def duplicate_indexes(lst):
 
 class TabuSearch:
 
-    def __init__(self, initial_solution, tabu_size=10, max_iterations=100):
+    def __init__(self, initial_solution, tabu_size=50, max_iterations=250):
         self.current_solution = initial_solution
         self.best_solution = initial_solution
         self.tabu_list = []
@@ -55,7 +55,6 @@ class TabuSearch:
         
         first_new_schedule = self.swap_teams(schedule, t1, t2, r).copy()
         if not check_constraint_4(first_new_schedule, first_new_schedule.shape[0]):
-            print("Started by switching teams into itself, break chain")
             return False
         altered_rounds.add(r)
 
@@ -70,12 +69,9 @@ class TabuSearch:
             altered_rounds.add(next_switch)
 
         if len(altered_rounds) == max_length:
-            print("Max length reached, returning None")
             return False
         
         else:
-            print(f"Final schedule after recovery in {len(altered_rounds)} steps:")
-            print(first_new_schedule)
             return first_new_schedule
     
     def recovery_n2(self, schedule, t1, r1, r2):
@@ -125,7 +121,7 @@ class TabuSearch:
         schedule_changed = schedule.copy()
         for r in range(schedule.shape[1]):
             if abs(schedule_changed[t1, r]) != t2 + 1 and abs(schedule_changed[t2, r]) != t1 + 1:
-                schedule_changed[t1, r], schedule_changed[t2, r] = schedule_changed[t2, r], schedule_changed[t1, r]
+                schedule_changed = self.swap_teams(schedule_changed, t1, t2, r)
         return schedule_changed
     
     def recovery_n5(self, schedule, t1, t2):
@@ -146,32 +142,45 @@ class TabuSearch:
                     # Note that t1 and t2 are 0-indexed
                     for r in range(solution.rounds):
                         new_schedule = self.recovery_n1(solution.schedule.copy(), t1, t2, r)
-                        new_solution = Solution(solution.n, solution.distance_matrix)
-                        new_solution.set_schedule(np.array(new_schedule))
-                        neighbors.append(new_solution)
+                        if new_schedule is not False:
+                            new_solution = Solution(solution.n, solution.distance_matrix)
+                            new_solution.set_schedule(np.array(new_schedule))
+                            neighbors.append(new_solution)
+
+                    new_solution = Solution(solution.n, solution.distance_matrix)
+                    new_solution.set_schedule(self.recovery_n4(solution.schedule.copy(), t1, t2))
+                    neighbors.append(new_solution)
+                    new_solution = Solution(solution.n, solution.distance_matrix)
+                    new_solution.set_schedule(self.recovery_n5(solution.schedule.copy(), t1, t2))
+                    neighbors.append(new_solution)
         
         for r1 in range(solution.rounds):
             for r2 in range(solution.rounds):
                 if r1 != r2:
                     for t in range(solution.n):
                         new_schedule = self.recovery_n2(solution.schedule.copy(), t, r1, r2)
-                        new_solution = Solution(solution.n, solution.distance_matrix)
-                        new_solution.set_schedule(np.array(new_schedule))
-                        neighbors.append(new_solution)
+                        if new_schedule is not False:
+                            new_solution = Solution(solution.n, solution.distance_matrix)
+                            new_solution.set_schedule(np.array(new_schedule))
+                            neighbors.append(new_solution)
+
+                    new_solution = Solution(solution.n, solution.distance_matrix)
+                    new_solution.set_schedule(self.recovery_n3(solution.schedule.copy(), r1, r2))
+                    neighbors.append(new_solution)
 
         return neighbors
 
-
     def search(self):
         iterations = 0
+        print("Starting Tabu Search...")
         while iterations < self.max_iterations:
-
+            print(f"Iteration {iterations + 1}, Current Cost: {self.current_solution.calculate_cost()}, Best Cost: {self.best_solution.calculate_cost()}")
             neighbors = self.get_neighbors(self.current_solution)
             best_neighbor = None
             best_cost = float('inf')
 
             for neighbor in neighbors:
-                if neighbor not in self.tabu_list:
+                if neighbor.represent() not in self.tabu_list:
                     cost = neighbor.calculate_cost()
                     if cost < best_cost:
                         best_cost = cost
@@ -184,7 +193,7 @@ class TabuSearch:
             if best_cost < self.best_solution.calculate_cost():
                 self.best_solution = best_neighbor
 
-            self.tabu_list.append(best_neighbor)
+            self.tabu_list.append(best_neighbor.represent())
             if len(self.tabu_list) > self.tabu_size:
                 self.tabu_list.pop(0)
 
@@ -214,10 +223,6 @@ if __name__ == "__main__":
     TS = TabuSearch(solution)
 
     print(TS.current_solution.schedule)
-    #TS.current_solution.schedule = TS.recovery_n2(TS.current_solution.schedule, 1, 0, 3)
-    #TS.current_solution.schedule = TS.recovery_n3(TS.current_solution.schedule, 0, 3)    
-    #TS.current_solution.schedule = TS.recovery_n4(TS.current_solution.schedule, 2, 3)
-    TS.current_solution.schedule = TS.recovery_n5(TS.current_solution.schedule, 0, 1)
-    print(TS.current_solution.schedule)
+    print(TS.search().schedule)
     print(check_constraints(TS.current_solution.schedule, TS.current_solution.n))
 

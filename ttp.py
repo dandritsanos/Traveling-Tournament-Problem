@@ -13,6 +13,9 @@ class Solution:
         self.schedule = schedule
         self.abs_schedule = np.abs(schedule)
 
+    def represent(self):
+        return tuple(map(tuple, self.schedule))
+
     def calculate_cost(self):
         cost = 0
         current_locations = np.array(range(self.n))
@@ -30,6 +33,16 @@ class Solution:
                     next_locations[team] = abs(opponent) - 1
 
             current_locations = next_locations
+
+        # Add big penalty if constraints are violated
+        if not check_constraint_1(self.schedule, self.n):
+            cost += 1e6
+        if not check_constraint_2(self.schedule, self.n):
+            cost += 1e6
+        if not check_constraint_3(self.schedule, self.n):
+            cost += 1e6
+        if not check_constraint_4(self.schedule, self.n):
+            cost += 1e6
         return cost
 
 def check_constraints(schedule, n):
