@@ -34,15 +34,16 @@ class Solution:
 
             current_locations = next_locations
 
+        # All teams go home:
+        for team in range(self.n):
+            cost += self.distance_matrix[current_locations[team], team]
+
         # Add big penalty if constraints are violated
-        if not check_constraint_1(self.schedule, self.n):
-            cost += 1e6
-        if not check_constraint_2(self.schedule, self.n):
-            cost += 1e6
-        if not check_constraint_3(self.schedule, self.n):
-            cost += 1e6
-        if not check_constraint_4(self.schedule, self.n):
-            cost += 1e6
+        cost += check_constraint_1(self.schedule, self.n) * 1e5
+        cost += check_constraint_2(self.schedule, self.n) * 1e5
+        cost += check_constraint_3(self.schedule, self.n) * 1e5
+        cost += check_constraint_4(self.schedule, self.n) * 1e5
+        cost += check_constraint_5(self.schedule, self.n) * 1e5
         return cost
 
 def check_constraints(schedule, n):
@@ -57,7 +58,7 @@ def check_constraint_1(schedule, n):
     n = n
     rounds = 2 * (n - 1)
     schedule = schedule
-
+    violations = 0
     # Check that each team plays against each other team exactly once at home and once away
     for team in range(n):
         home_games = set()
@@ -71,13 +72,13 @@ def check_constraint_1(schedule, n):
             else:
                 away_games.add(-opponent)
         if len(home_games) != n - 1 or len(away_games) != n - 1:
-            return False
-    return True
+            violations += 1
+    return violations
 
 def check_constraint_2(schedule, n, UpperBound = 3):
     """No team plays more than UpperBound consecutive home or away games."""
     rounds = 2 * (n - 1)
-
+    violations = 0
     for team in range(n):
         consecutive_home = 0
         consecutive_away = 0
@@ -94,12 +95,13 @@ def check_constraint_2(schedule, n, UpperBound = 3):
                 consecutive_away = 0
             
             if consecutive_home > UpperBound or consecutive_away > UpperBound:
-                return False
-    return True
-    
+                violations += 1
+    return violations
+
 def check_constraint_3(schedule, n):
     """Each match has one team playing home, and one team playing away"""
     rounds = 2 * (n - 1)
+    violations = 0
 
     for round in range(rounds):
         home_teams = set()
@@ -112,24 +114,35 @@ def check_constraint_3(schedule, n):
                 away_teams.add(team + 1)
         
         if len(home_teams) != len(away_teams):
-            return False
+            violations += 1
         
         for team in home_teams:
             if -team not in schedule[:, round]:
-                return False
+                violations += 1
         for team in away_teams:
             if team not in schedule[:, round]:
-                return False
-    return True
+                violations += 1
+    return violations
     
 def check_constraint_4(schedule, n):
     # No team plays himself
     rounds = 2 * (n - 1)
+    violations = 0
     for team in range(n):
         for round in range(rounds):
             if abs(schedule[team, round]) == team + 1:
-                return False
-    return True
+                violations += 1
+    return violations
+
+def check_constraint_5(schedule, n):
+    # Teams can not play eachother in a row
+    rounds = 2 * (n - 1)
+    violations = 0
+    for team in range(n):
+        for round in range(rounds - 1):
+            if abs(schedule[team, round]) == abs(schedule[team, round + 1]):
+                violations += 1
+    return violations
 
 if __name__ == "__main__":
     n = 4

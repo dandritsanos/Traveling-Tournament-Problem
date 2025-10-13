@@ -20,7 +20,7 @@ def duplicate_indexes(lst):
 
 class TabuSearch:
 
-    def __init__(self, initial_solution, tabu_size=50, max_iterations=250):
+    def __init__(self, initial_solution, tabu_size=200, max_iterations=1000):
         self.current_solution = initial_solution
         self.best_solution = initial_solution
         self.tabu_list = []
@@ -54,7 +54,7 @@ class TabuSearch:
         altered_rounds = set()
         
         first_new_schedule = self.swap_teams(schedule, t1, t2, r).copy()
-        if not check_constraint_4(first_new_schedule, first_new_schedule.shape[0]):
+        if check_constraint_4(first_new_schedule, first_new_schedule.shape[0]) >= 0:
             return False
         altered_rounds.add(r)
 
