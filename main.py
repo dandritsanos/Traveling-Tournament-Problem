@@ -7,7 +7,7 @@ import pandas as pd
 from xml_loader import load_instance
 
 if __name__ == "__main__":
-    n, distance_matrix = load_instance('NL6.xml')
+    n, distance_matrix = load_instance('NL10.xml')
 
     solver = GreedySolver(n, distance_matrix)
     sol = solver.create_solution()
