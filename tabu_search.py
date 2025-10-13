@@ -54,12 +54,12 @@ class TabuSearch:
         altered_rounds = set()
         
         first_new_schedule = self.swap_teams(schedule, t1, t2, r).copy()
-        if check_constraint_4(first_new_schedule, first_new_schedule.shape[0]) >= 0:
+        if check_constraint_4(first_new_schedule, first_new_schedule.shape[0]) > 0:
             return False
         altered_rounds.add(r)
 
-        while len(altered_rounds) < max_length and (check_constraint_1(first_new_schedule, first_new_schedule.shape[0]) == False or 
-                                                    check_constraint_4(first_new_schedule, first_new_schedule.shape[0]) == False
+        while len(altered_rounds) < max_length and (check_constraint_1(first_new_schedule, first_new_schedule.shape[0]) > 0 or 
+                                                    check_constraint_4(first_new_schedule, first_new_schedule.shape[0]) > 0
             ):
             # Find duplicates in t1 schedule
             dup_indexes = duplicate_indexes(first_new_schedule[t1, :])
@@ -69,6 +69,7 @@ class TabuSearch:
             altered_rounds.add(next_switch)
 
         if len(altered_rounds) == max_length:
+            
             return False
         
         else:
