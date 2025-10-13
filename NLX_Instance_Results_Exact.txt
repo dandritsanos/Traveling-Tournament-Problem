@@ -1,0 +1,145 @@
+NL4 Instance Results:
+
+Best travel distance found: 8276.0
+Round-by-round schedule (A@H):
+Round 1: ['2@0', '3@1']
+Round 2: ['1@0', '3@2']
+Round 3: ['1@2', '3@0']
+Round 4: ['0@2', '1@3']
+Round 5: ['0@1', '2@3']
+Round 6: ['0@3', '2@1']
+
+Per-team H/A patterns:
+Team 0: HHHAAA
+Team 1: HAAAHH
+Team 2: AHHHAA
+Team 3: AAAHHH
+
+
+
+NL6 Instance Results:
+
+Best travel distance found: 23916.0
+Round-by-round schedule (A@H):
+Round 1: ['1@5', '2@3', '4@0']
+Round 2: ['1@0', '3@5', '4@2']
+Round 3: ['1@4', '3@2', '5@0']
+Round 4: ['0@2', '3@1', '5@4']
+Round 5: ['0@3', '2@5', '4@1']
+Round 6: ['0@5', '1@2', '4@3']
+Round 7: ['1@3', '2@0', '4@5']
+Round 8: ['2@4', '3@0', '5@1']
+Round 9: ['0@1', '3@4', '5@2']
+Round 10: ['0@4', '2@1', '5@3']
+
+Per-team H/A patterns:
+Team 0: HHHAAAHHAA
+Team 1: AAAHHAAHHH
+Team 2: AHHHAHAAHA
+Team 3: HAAAHHHAAH
+Team 4: AAHHAAAHHH
+Team 5: HHAAHHHAAA
+
+
+
+NL8 instance Results:
+
+Cutting planes:
+  Gomory: 4
+  Cover: 30
+  Clique: 2
+  Flow cover: 4
+  Zero half: 130
+
+Explored 35889 nodes (5557239 simplex iterations) in 60.18 seconds (121.92 work units)
+Thread count was 16 (of 16 available processors)
+
+Solution count 10: 23916 23978 24396 ... 27615
+
+Optimal solution found (tolerance 1.00e-02)
+Best objective 2.391600000000e+04, best bound 2.367900000000e+04, gap 0.9910%
+
+User-callback calls 78808, time in user-callback 0.08 sec
+
+Best travel distance found: 40094 (40093.99999999994)
+Round-by-round schedule (A@H):
+Round 1: ['1@6', '3@7', '4@0', '5@2']
+Round 2: ['1@0', '2@4', '3@5', '6@7']
+Round 3: ['1@4', '2@0', '6@5', '7@3']
+Round 4: ['0@5', '2@6', '4@3', '7@1']
+Round 5: ['0@6', '4@1', '5@3', '7@2']
+Round 6: ['0@7', '3@6', '4@2', '5@1']
+Round 7: ['1@2', '3@0', '6@4', '7@5']
+Round 8: ['1@7', '2@5', '3@4', '6@0']
+Round 9: ['0@3', '1@5', '2@7', '4@6']
+Round 10: ['0@1', '2@3', '4@7', '5@6']
+Round 11: ['0@2', '1@3', '4@5', '7@6']
+Round 12: ['3@2', '5@0', '6@1', '7@4']
+Round 13: ['3@1', '5@4', '6@2', '7@0']
+Round 14: ['0@4', '2@1', '5@7', '6@3']
+
+Per-team H/A patterns:
+Team 0: HHHAAAHHAAAHHA
+Team 1: AAAHHHAAAHAHHH
+Team 2: HAAAHHHAAAHHHA
+Team 3: AAHHHAAAHHHAAH
+Team 4: AHHAAAHHAAAHHH
+Team 5: AHHHAAHHHAHAAA
+Team 6: HAAHHHAAHHHAAA
+Team 7: HHAAAHAHHHAAAH
+
+
+
+NL10 instance Results:
+
+Cutting planes:
+  Gomory: 41
+  Cover: 21
+  MIR: 12
+  StrongCG: 3
+  Flow cover: 166
+  Zero half: 1219
+  Mod-K: 11
+
+Explored 29745 nodes (39156753 simplex iterations) in 38979.10 seconds (16237.16 work units)
+Thread count was 16 (of 16 available processors)
+
+Solution count 10: 64485 64504 64595 ... 69475
+
+Solve interrupted
+Best objective 6.448500000000e+04, best bound 5.254700000000e+04, gap 18.5128%
+
+User-callback calls 709532, time in user-callback 4.90 sec
+
+Best travel distance found: 64485.0
+Round-by-round schedule (A@H):
+Round 1: ['0@4', '1@2', '3@8', '6@5', '9@7']
+Round 2: ['1@4', '2@7', '3@0', '6@9', '8@5']
+Round 3: ['1@0', '2@9', '3@4', '7@5', '8@6']
+Round 4: ['2@8', '4@0', '5@1', '7@6', '9@3']
+Round 5: ['0@6', '4@2', '5@3', '7@8', '9@1']
+Round 6: ['0@5', '3@1', '4@7', '6@8', '9@2']
+Round 7: ['1@9', '3@2', '5@7', '6@4', '8@0']
+Round 8: ['1@7', '2@0', '5@9', '6@3', '8@4']
+Round 9: ['0@3', '1@6', '2@4', '5@8', '7@9']
+Round 10: ['0@1', '2@6', '4@3', '8@7', '9@5']
+Round 11: ['0@2', '3@7', '4@5', '6@1', '8@9']
+Round 12: ['1@5', '3@9', '4@8', '6@2', '7@0']
+Round 13: ['1@8', '3@6', '5@2', '7@4', '9@0']
+Round 14: ['2@1', '5@0', '6@7', '8@3', '9@4']
+Round 15: ['0@7', '1@3', '5@4', '8@2', '9@6']
+Round 16: ['0@9', '3@5', '4@6', '7@2', '8@1']
+Round 17: ['0@8', '2@3', '4@9', '5@6', '7@1']
+Round 18: ['2@5', '4@1', '6@0', '7@3', '9@8']
+
+Per-team H/A patterns:
+Team 0: AHHHAAHHAAAHHHAAAH
+Team 1: AAAHHHAAAHHAAHAHHH
+Team 2: HAAAHHHAAAHHHAHHAA
+Team 3: AAAHHAAHHHAAAHHAHH
+Team 4: HHHAAAHHHAAAHHHAAA
+Team 5: HHHAAHAAAHHHAAAHAH
+Team 6: AAHHHAAAHHAAHAHHHA
+Team 7: HHAAAHHHAHHAAHHAAA
+Team 8: HAAHHHAAHAAHHAAAHH
+Team 9: AHHAAAHHHAHHAAAHHA
